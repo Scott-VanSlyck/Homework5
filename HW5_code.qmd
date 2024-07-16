@@ -1,0 +1,260 @@
+---
+title: "ST558: Homework 5"
+authors: "Scott Van Slyck"
+description: "Working with Model Fitting"
+date: "July 16, 2024"
+format: html
+editor: visual
+---
+```{r}
+#| echo: FALSE
+
+packages <- c("tidyverse", "caret", "rpart", "randomForest", "gbm")
+
+install_if_missing <- function(package) {
+  if (!require(package, character.only = TRUE)) {
+    install.packages(package, dependencies = TRUE)
+    library(package, character.only = TRUE)
+  }
+}
+
+lapply(packages, install_if_missing)
+```
+
+
+### Task 1: Conceptual Questions
+1. What is the purpose of using cross-validation when fitting a random forest model?
+
+Cross Validation helps see how well a random forest model is working on different parts of the data. This prevents overfitting and provides a more accurate estimate.
+
+
+2. Describe the bagged tree algorithm.
+
+Bagging (Bootstrap Aggregating) trains several decision trees on bootstrapped data samples and combines their results by regression or classification to provide better results.
+
+
+3. What is meant by a general linear model?
+
+A GLM is a linear model that is extended to accomadate for response variables with different distributions and uses a link function to relate the predictors to the response variable.
+
+
+4. When fitting a multiple linear regression model, what does adding an interaction term do? That is,
+what does it allow the model to do differently as compared to when it is not included in the model?
+
+Adding an interaction term allows the model to capture a combined effect of two predictors on the response and displays their relationship changes between one predictor with different values of another.
+
+
+5. Why do we split our data into a training and test set?
+
+Splitting the data allows us to train the model on one subset and validate its performance on a new one. This ensures that it can make accurate predictions on the new data based on what it has learned from the training set.
+
+
+### Task 2: Fitting Models
+
+For this Homework assignment we will be using the "hearts.csv" dataset which indicate whether or not someone has a heart disease by HeartDisease = 1 or = 0.
+```{r}
+# Load dataset
+heart_dat <- read.csv("heart.csv")
+
+# Check for missing values
+missing <- colSums(is.na(heart_dat))
+print(missing)
+
+# Summarize dataset
+summary(heart_dat)
+
+# Convert HeartDisease to a factor
+heart_dat$HeartDisease <- as.factor(heart_dat$HeartDisease)
+
+# Remove ST_Slope column
+heart_dat <- heart_dat %>% select(-ST_Slope)
+
+# Create dummy variables for categorical variables
+categorical_vars <- c("Sex", "ExerciseAngina", "ChestPainType", "RestingECG")
+dummy_vars <- dummyVars(~ ., data = heart_dat[categorical_vars])
+dummy_data <- predict(dummy_vars, heart_dat[categorical_vars])
+
+# Combine dummy variables with the original dataset
+heart_dat <- heart_dat %>%
+  select(-one_of(categorical_vars)) %>%
+  bind_cols(as.data.frame(dummy_data))
+```
+
+
+KNN with Split Dataset
+```{r}
+# Split the data into training and test sets
+set.seed(123)
+train_index <- createDataPartition(heart_dat$HeartDisease, p = 0.7, list = FALSE)
+train_data <- heart_dat[train_index, ]
+test_data <- heart_dat[-train_index, ]
+
+# Set up 10-fold cross-validation
+train_control <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+
+# Set up the grid for k
+tune_grid <- expand.grid(k = 1:40)
+
+# Train the kNN model
+knn_model <- train(
+  HeartDisease ~ ., 
+  data = train_data,
+  method = "knn",
+  trControl = train_control,
+  preProcess = c("center", "scale"),
+  tuneGrid = tune_grid
+)
+
+knn_model
+
+# Plot the results of the kNN model
+plot(knn_model)
+
+# Predict on the test set
+predictions_knn <- predict(knn_model, newdata = test_data)
+
+# Evaluate the kNN model using confusion matrix
+conf_matrix_knn <- confusionMatrix(predictions_knn, test_data$HeartDisease)
+print(conf_matrix_knn)
+```
+
+
+Logistic Regression Models
+```{r}
+# Model 1: Using all predictors
+model_1 <- train(
+  HeartDisease ~ ., 
+  data = train_data,
+  method = "glm",
+  family = binomial,
+  trControl = train_control,
+  preProcess = c("center", "scale")
+)
+
+# Model 2: Using a subset of predictors
+model_2 <- train(
+  HeartDisease ~ Age + Cholesterol + MaxHR + SexM + ChestPainTypeATA,
+  data = train_data,
+  method = "glm",
+  family = binomial,
+  trControl = train_control,
+  preProcess = c("center", "scale")
+)
+
+# Model 3: Using a different subset
+model_3 <- train(
+  HeartDisease ~ Age + RestingBP + FastingBS + ExerciseAnginaY + RestingECGLVH,
+  data = train_data,
+  method = "glm",
+  family = binomial,
+  trControl = train_control,
+  preProcess = c("center", "scale")
+)
+
+# Print summaries of the logistic regression models
+summary(model_1)
+summary(model_2)
+summary(model_3)
+
+# Compare the logistic regression models based on cross-validated performance
+resamples_list <- resamples(list(model_1 = model_1, model_2 = model_2, model_3 = model_3))
+summary(resamples_list)
+dotplot(resamples_list)
+
+# Choose the best logistic regression model
+best_model_logistic <- model_1
+
+# Predictions on the test set using the best logistic regression model
+predictions_logistic <- predict(best_model_logistic, newdata = test_data)
+
+# Logistic regression model
+conf_matrix_logistic <- confusionMatrix(predictions_logistic, test_data$HeartDisease)
+print(conf_matrix_logistic)
+```
+
+
+Tree Models
+```{r}
+### Classification Tree Model
+# Set up the grid for tuning the parameter cp
+tune_grid_rpart <- expand.grid(cp = seq(0, 0.1, by = 0.001))
+
+# Train the classification tree model
+rpart_model <- train(
+  HeartDisease ~ ., 
+  data = train_data,
+  method = "rpart",
+  trControl = train_control,
+  tuneGrid = tune_grid_rpart
+)
+
+# Print the results of the classification tree model
+print(rpart_model)
+
+# Make predictions on the test set
+predictions_rpart <- predict(rpart_model, newdata = test_data)
+
+# Evaluate the classification tree model on the test set using confusion matrix
+conf_matrix_rpart <- confusionMatrix(predictions_rpart, test_data$HeartDisease)
+print(conf_matrix_rpart)
+
+### Random Forest Model
+# Set up the grid for tuning the parameter mtry
+num_predictors <- ncol(train_data) - 1
+tune_grid_rf <- expand.grid(mtry = seq(1, num_predictors, by = 2))
+
+# Random forest model
+rf_model <- train(
+  HeartDisease ~ ., 
+  data = train_data,
+  method = "rf",
+  trControl = train_control,
+  tuneGrid = tune_grid_rf
+)
+
+rf_model
+
+# Predictions on the test set
+predictions_rf <- predict(rf_model, newdata = test_data)
+
+# Confusion matrix for rf_model predictions
+conf_matrix_rf <- confusionMatrix(predictions_rf, test_data$HeartDisease)
+print(conf_matrix_rf)
+
+### Boosted Tree Model
+# Set up the grid for tuning the parameters
+tune_grid_gbm <- expand.grid(
+  n.trees = c(25, 50, 100, 200),
+  interaction.depth = c(1, 2, 3),
+  shrinkage = 0.1,
+  n.minobsinnode = 10
+)
+
+# Boosted tree model
+gbm_model <- train(
+  HeartDisease ~ ., 
+  data = train_data,
+  method = "gbm",
+  trControl = train_control,
+  tuneGrid = tune_grid_gbm,
+  verbose = FALSE
+)
+
+gbm_model
+
+# Predictions
+predictions_gbm <- predict(gbm_model, newdata = test_data)
+
+# Confusion matrix for gbm model predictions
+conf_matrix_gbm <- confusionMatrix(predictions_gbm, test_data$HeartDisease)
+print(conf_matrix_gbm)
+
+# Compare models
+model_list <- list
+```
+
+To conclude, we can discuss which model did the best job in terms of accuracy on the test set. In last place, the kNN 
+model returned an accuracy score of .8509 with a 95% confidence interval ranging from (0.8032, 0.8908). In second place
+was the full predictor logistic regression model with an accuracy score of 0.8618 with a 95% confidence interval of 
+(0.8153, 0.9003). With the highest accuracy score the random forest tree model gave us an accuracy score of 0.8655 with
+a 95% confidence interval of (0.8193, 0.9035).
